@@ -58,10 +58,21 @@ my %DESCRIPTION_FIELDS = (
 	'mpls'             => [qw(mplsVpnVrfName)],
 	'cbqos'            => [qw(CbQosPolicyMapName)],
 	'addressTable'     => [qw(dot1dTpFdbAddress)],
+	'diskIOTable'      => [qw(diskIODevice)],
+	'env-temp'         => [qw(lmTempSensorsDevice)],
+	'storage'          => [qw(hrStorageDescr)],
+	'service'          => [qw(service)],
+	'ping'             => [qw(host)],
+	'device'		   => [qw(index)],
 );
 
 # Fallback field names tried in order when concept is not in the map above.
 my @FALLBACK_DESCRIPTION_FIELDS = qw(Description description Name name ifDescr);
+
+# Rename concepts for clearer MQTT topic/payload naming.
+my %CONCEPT_RENAME = (
+	'device' => 'cpuLoad',
+);
 
 sub collect_plugin
 {
@@ -97,8 +108,9 @@ sub collect_plugin
 		return (2, "Failed to load mqttobservations config");
 	}
 
-	my $mqtt_config  = $plugin_config->{mqtt};
-	my $concept_list = $plugin_config->{concepts};
+	my $mqtt_config    = $plugin_config->{mqtt};
+	my $mqtt_secondary = $plugin_config->{mqtt_secondary};
+	my $concept_list   = $plugin_config->{concepts};
 
 	if (!$mqtt_config || !$mqtt_config->{server})
 	{
@@ -159,16 +171,6 @@ sub collect_plugin
 
 			my $inv_data = $inventory->data();
 
-			# Get latest data for this inventory instance (reads from latest_data collection)
-			my $latest = $inventory->get_newest_timed_data();
-			if (!$latest->{success} || !$latest->{data})
-			{
-				$NG->log->debug("MqttObservations: No latest data for '$concept' instance on $node"
-					. ($latest->{error} ? ": $latest->{error}" : ''))
-					if $extra_logging;
-				next;
-			}
-
 			# Determine the index: use the inventory data's index field, fall back to '0'
 			my $index = $inv_data->{index} // '0';
 
@@ -180,12 +182,21 @@ sub collect_plugin
 			# Determine the best human-readable description for this instance
 			my $description = _get_description($concept, $inv_data);
 
+			# Get latest data for this inventory instance (reads from latest_data collection)
+			my $latest = $inventory->get_newest_timed_data();
+			if (!$latest->{success} || !$latest->{data})
+			{
+				$NG->log->debug("MqttObservations: $node No latest data for '$concept', description '$description', index '$index'" . ($latest->{error} ? ": $latest->{error}" : ''))
+					if $extra_logging;
+				next;
+			}
+
 			# Build a list of messages to publish.
 			# For catchall, split into one message per subconcept (health, tcp, laload, etc.)
 			# For other concepts, publish one message per inventory instance as before.
 			my @messages;
 
-			if ($concept eq 'catchall')
+			if ($concept eq 'catchall' || $concept eq 'ping')
 			{
 				for my $subconcept (sort keys %{$latest->{data}})
 				{
@@ -195,10 +206,10 @@ sub collect_plugin
 					my $sub_derived = _filter_derived($latest->{derived_data}{$subconcept});
 
 					push @messages, {
-						topic   => "$base_topic/$node/$subconcept/$topic_index",
+						topic   => "$base_topic/$node/$subconcept",
 						payload => {
 							%node_meta,
-							concept      => $concept,
+							concept      => $subconcept,
 							subconcept   => $subconcept,
 							index        => $index,
 							description  => $description,
@@ -222,11 +233,20 @@ sub collect_plugin
 					}
 				}
 
+				my $topic_concept = $CONCEPT_RENAME{$concept} // $concept;
+
 				push @messages, {
-					topic   => "$base_topic/$node/$concept/$topic_index",
+					topic   => "$base_topic/$node/$topic_concept/" . do {
+						my $t = $description;
+						$t =~ s|^/+||;
+						$t =~ s|/|-|g;
+						$t =~ s/:/-/g;
+						$t =~ s/\s+/_/g;
+						$t ne '' ? $t : $topic_index;
+					},
 					payload => {
 						%node_meta,
-						concept      => $concept,
+						concept      => $topic_concept,
 						index        => $index,
 						description  => $description,
 						timestamp    => $latest->{time} // time(),
@@ -253,6 +273,29 @@ sub collect_plugin
 				if ($pub_error)
 				{
 					$NG->log->error("MqttObservations: Failed to publish to $msg->{topic}: $pub_error");
+				}
+
+				# Publish to secondary MQTT server if configured
+				if ($mqtt_secondary && $mqtt_secondary->{server})
+				{
+					my $sec_base  = $mqtt_secondary->{topic} // $base_topic;
+					my $sec_topic = $sec_base . substr($msg->{topic}, length($base_topic));
+
+					$NG->log->debug("MqttObservations: Publishing to secondary $sec_topic") if $extra_logging;
+
+					my $sec_error = publishMqtt(
+						topic    => $sec_topic,
+						message  => $encoded,
+						retain   => $retain,
+						retries  => $retries,
+						server   => $mqtt_secondary->{server},
+						username => $mqtt_secondary->{username},
+						password => $mqtt_secondary->{password},
+					);
+					if ($sec_error)
+					{
+						$NG->log->error("MqttObservations: Failed to publish to secondary $sec_topic: $sec_error");
+					}
 				}
 			}
 		}

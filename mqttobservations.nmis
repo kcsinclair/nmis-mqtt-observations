@@ -35,6 +35,15 @@
 		'extra_logging' => 0,
 	},
 
+	# Optional secondary MQTT broker. If configured, every message is also
+	# published to this broker. Remove or leave 'server' empty to disable.
+	#'mqtt_secondary' => {
+	#	'server'   => 'secondary.mqtt.server:1883',
+	#	'topic'    => 'obs/nmis',
+	#	'username' => '',
+	#	'password' => '',
+	#},
+
 	# List of NMIS inventory concepts to publish.
 	# Each concept maps to a class of collected data:
 	#   'interface'    - network interfaces (ifDescr, ifOperStatus, counters, ...)
@@ -44,8 +53,13 @@
 	# Only concepts listed here will be published. Remove or comment out any
 	# concepts you do not need.
 	'concepts' => [
-		'interface',
 		'catchall',
+		'interface',
 		'Host_Storage',
+		'diskIOTable',
+		'env-temp',
+		'service',
+		'ping',
+		'device'
 	],
 );
