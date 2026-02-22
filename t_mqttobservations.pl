@@ -11,9 +11,13 @@
 use strict;
 use warnings;
 
-use FindBin;
-use lib "$FindBin::Bin/../../lib";
-use lib "$FindBin::Bin/../../conf/plugins";
+# if using something other than /usr/local/nmis9
+#use FindBin;
+#use lib "$FindBin::Bin/../../lib";
+#use lib "$FindBin::Bin/../../conf/plugins";
+
+use lib "/usr/local/nmis9/lib";
+use lib "/usr/local/nmis9/conf/plugins";
 
 use Test::More;
 
