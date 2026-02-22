@@ -109,6 +109,19 @@ The `concepts` list controls which NMIS inventory types are exported. Supported 
 | `lldp` | LLDP neighbours | `{base}/sol/lldp/switch1` |
 | `bgp` | BGP peers | `{base}/sol/bgp/10.0.0.1` |
 
+## Metric Types — Gauges
+
+All metrics published by this plugin are **gauges**: each value represents the measured amount or rate for the observation period ending at the message timestamp. For example, `system.network.io.receive` is the number of bytes received during the last NMIS collect interval, not a monotonically increasing counter.
+
+NMIS derives these gauge values from the raw SNMP counters internally — computing the delta between successive polls and normalising by the poll interval where appropriate. The raw cumulative counter values (stored internally with a `_raw` suffix, e.g. `ifInOctets_raw`) are deliberately excluded from published messages to keep the payload consistent and immediately usable without further processing.
+
+If raw counter values are required — for example, to feed a time-series database that performs its own rate calculation — the plugin can be modified to include them by removing or adjusting the `_raw` filter in the `_apply_field_rename` sub:
+
+```perl
+# In _apply_field_rename — remove or comment out this line to include _raw fields:
+next if $k =~ /_raw$/i;
+```
+
 ## Message Format
 
 Messages are flat JSON using OTel attribute naming on the envelope. Well-known metric fields are renamed to OpenTelemetry semantic convention names. Fields with no known OTel mapping pass through with a `nmis.` prefix. Fields ending in `_raw` are excluded.
