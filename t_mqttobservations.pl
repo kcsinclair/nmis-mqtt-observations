@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 #
-# Tests for the MqttObservations NMIS collect plugin.
+# Tests for the mqttobservations NMIS collect plugin.
 #
 # Run from the contrib/nmis-mqtt-observations/ directory:
 #   perl t_mqttobservations.pl
@@ -13,7 +13,7 @@ use warnings;
 
 use FindBin;
 use lib "$FindBin::Bin/../../lib";
-use lib "$FindBin::Bin";
+use lib "$FindBin::Bin/../../conf/plugins";
 
 use Test::More;
 
@@ -24,9 +24,9 @@ use Test::More;
 # We load the plugin directly. Because NMISNG::Util is pulled in via lib/,
 # that must be available. If running on a system without the full NMIS stack,
 # this will catch that early.
-use_ok('MqttObservations') or BAIL_OUT("Plugin failed to load — check NMIS lib path");
+use_ok('mqttobservations') or BAIL_OUT("Plugin failed to load — check NMIS lib path");
 
-can_ok('MqttObservations', 'collect_plugin');
+can_ok('mqttobservations', 'collect_plugin');
 
 # ---------------------------------------------------------------------------
 # 2. _get_description — concept-specific field mapping
@@ -103,7 +103,7 @@ my $desc_tests = [
 for my $t (@$desc_tests)
 {
 	my ($concept, $data, $expected, $label) = @$t;
-	my $got = MqttObservations::_get_description($concept, $data);
+	my $got = mqttobservations::_get_description($concept, $data);
 	is($got, $expected, "_get_description: $label");
 }
 
@@ -186,7 +186,7 @@ sub run_with_catchall
 	my $sys = MockSys->new(catchall_data => \%catchall);
 	my $ng  = MockNMISNG->new;
 	my $cfg = {};    # empty config — plugin should bail before loading file
-	return MqttObservations::collect_plugin(
+	return mqttobservations::collect_plugin(
 		node   => 'testnode',
 		sys    => $sys,
 		config => $cfg,

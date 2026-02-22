@@ -28,7 +28,7 @@
 #
 # Requires: Net::MQTT::Simple (cpanm Net::MQTT::Simple)
 #
-package MqttObservations;
+package mqttobservations;
 our $VERSION = "1.0.0";
 
 use strict;
@@ -38,7 +38,9 @@ use FindBin;
 use lib "$FindBin::Bin/../../lib";
 
 use JSON::XS;
+use NMISNG;
 use NMISNG::Util;
+
 
 # Maps concept names to the inventory data fields that best describe an instance.
 # The first defined, non-empty field found is used.
@@ -89,7 +91,7 @@ sub collect_plugin
 
 	# Load plugin configuration
 	my $plugin_config = NMISNG::Util::loadTable(dir => 'conf', name => 'mqttobservations', conf => $C);
-	if (!$plugin_config)
+	if (!$plugin_config || ref($plugin_config) ne 'HASH')
 	{
 		$NG->log->error("MqttObservations: Failed to load conf/mqttobservations.nmis");
 		return (2, "Failed to load mqttobservations config");
@@ -111,23 +113,9 @@ sub collect_plugin
 	}
 
 	my $extra_logging = NMISNG::Util::getbool($mqtt_config->{extra_logging});
+	my $retain        = NMISNG::Util::getbool($mqtt_config->{retain});
+	my $retries       = int($mqtt_config->{retries} // 1);
 	my $base_topic    = $mqtt_config->{topic} // 'obs/nmis';
-
-	# Connect to MQTT broker
-	my $mqtt;
-	eval {
-		require Net::MQTT::Simple;
-		$mqtt = Net::MQTT::Simple->new($mqtt_config->{server});
-		if ($mqtt_config->{username} && $mqtt_config->{password})
-		{
-			$mqtt->login($mqtt_config->{username}, $mqtt_config->{password});
-		}
-	};
-	if ($@)
-	{
-		$NG->log->error("MqttObservations: Failed to connect to MQTT broker '$mqtt_config->{server}': $@");
-		return (2, "MQTT connection failed: $@");
-	}
 
 	# Build the node-level metadata envelope included in every message
 	my $node_uuid = $S->nmisng_node->uuid() // '';
@@ -148,27 +136,35 @@ sub collect_plugin
 		$NG->log->debug("MqttObservations: Processing concept '$concept' for $node")
 			if $extra_logging;
 
-		my $model_data = $S->nmisng_node->get_inventory_model(
+		my $ids = $S->nmisng_node->get_inventory_ids(
 			concept => $concept,
-			filter  => {historic => 0}
+			filter  => {historic => 0},
 		);
 
-		if (my $err = $model_data->error())
+		if (!@$ids)
 		{
-			$NG->log->warn("MqttObservations: Failed to get inventory for '$concept' on $node: $err");
+			$NG->log->debug("MqttObservations: No inventory for '$concept' on $node")
+				if $extra_logging;
 			next;
 		}
 
-		while (my $inventory = $model_data->next_object())
+		for my $inv_id (@$ids)
 		{
+			my ($inventory, $error) = $S->nmisng_node->inventory(_id => $inv_id);
+			if ($error)
+			{
+				$NG->log->warn("MqttObservations: Failed to get inventory $inv_id for '$concept' on $node: $error");
+				next;
+			}
+
 			my $inv_data = $inventory->data();
 
-			# Get latest timed data for this inventory instance
-			my $timed = $inventory->get_newest_timed_data();
-			if (!$timed->{success} || !$timed->{data})
+			# Get latest data for this inventory instance (reads from latest_data collection)
+			my $latest = $inventory->get_newest_timed_data();
+			if (!$latest->{success} || !$latest->{data})
 			{
-				$NG->log->debug("MqttObservations: No timed data for '$concept' instance on $node"
-					. ($timed->{error} ? ": $timed->{error}" : ''))
+				$NG->log->debug("MqttObservations: No latest data for '$concept' instance on $node"
+					. ($latest->{error} ? ": $latest->{error}" : ''))
 					if $extra_logging;
 				next;
 			}
@@ -184,38 +180,97 @@ sub collect_plugin
 			# Determine the best human-readable description for this instance
 			my $description = _get_description($concept, $inv_data);
 
-			# Build the MQTT topic
-			my $topic = "$base_topic/$node/$concept/$topic_index";
+			# Build a list of messages to publish.
+			# For catchall, split into one message per subconcept (health, tcp, laload, etc.)
+			# For other concepts, publish one message per inventory instance as before.
+			my @messages;
 
-			# Build the JSON payload
-			my $payload = {
-				%node_meta,
-				concept     => $concept,
-				index       => $index,
-				description => $description,
-				timestamp   => $timed->{time} // time(),
-				data        => $timed->{data},
-			};
-
-			$NG->log->debug("MqttObservations: Publishing to $topic") if $extra_logging;
-
-			eval { $mqtt->publish($topic, $json_encoder->encode($payload)); };
-			if ($@)
+			if ($concept eq 'catchall')
 			{
-				$NG->log->error("MqttObservations: Failed to publish to $topic: $@");
-				# Attempt one reconnect and retry
-				eval {
-					$mqtt = Net::MQTT::Simple->new($mqtt_config->{server});
-					$mqtt->login($mqtt_config->{username}, $mqtt_config->{password})
-						if $mqtt_config->{username} && $mqtt_config->{password};
-					$mqtt->publish($topic, $json_encoder->encode($payload));
+				for my $subconcept (sort keys %{$latest->{data}})
+				{
+					my $sub_data = $latest->{data}{$subconcept};
+					next if (!$sub_data || ref($sub_data) ne 'HASH');
+
+					my $sub_derived = _filter_derived($latest->{derived_data}{$subconcept});
+
+					push @messages, {
+						topic   => "$base_topic/$node/$subconcept/$topic_index",
+						payload => {
+							%node_meta,
+							concept      => $concept,
+							subconcept   => $subconcept,
+							index        => $index,
+							description  => $description,
+							timestamp    => $latest->{time} // time(),
+							data         => $sub_data,
+							derived_data => (%$sub_derived ? $sub_derived : undef),
+						},
+					};
+				}
+			}
+			else
+			{
+				# Filter derived_data: exclude keys beginning with "08" or "16"
+				my %filtered_derived;
+				if ($latest->{derived_data})
+				{
+					for my $subconcept (keys %{$latest->{derived_data}})
+					{
+						my $filtered = _filter_derived($latest->{derived_data}{$subconcept});
+						$filtered_derived{$subconcept} = $filtered if %$filtered;
+					}
+				}
+
+				push @messages, {
+					topic   => "$base_topic/$node/$concept/$topic_index",
+					payload => {
+						%node_meta,
+						concept      => $concept,
+						index        => $index,
+						description  => $description,
+						timestamp    => $latest->{time} // time(),
+						data         => $latest->{data},
+						derived_data => (%filtered_derived ? \%filtered_derived : undef),
+					},
 				};
-				$NG->log->error("MqttObservations: Retry also failed for $topic: $@") if $@;
+			}
+
+			for my $msg (@messages)
+			{
+				$NG->log->debug("MqttObservations: Publishing to $msg->{topic}") if $extra_logging;
+
+				my $encoded = $json_encoder->encode($msg->{payload});
+				my $pub_error = publishMqtt(
+					topic    => $msg->{topic},
+					message  => $encoded,
+					retain   => $retain,
+					retries  => $retries,
+					server   => $mqtt_config->{server},
+					username => $mqtt_config->{username},
+					password => $mqtt_config->{password},
+				);
+				if ($pub_error)
+				{
+					$NG->log->error("MqttObservations: Failed to publish to $msg->{topic}: $pub_error");
+				}
 			}
 		}
 	}
 
 	return (0, undef);    # We publish externally; no NMIS node data was modified
+}
+
+# Filter a single derived_data hash: exclude keys beginning with "08" or "16"
+# args: hashref (may be undef)
+# returns: hashref (possibly empty)
+sub _filter_derived
+{
+	my ($src) = @_;
+	return {} if (!$src || ref($src) ne 'HASH');
+	my %filtered = map { $_ => $src->{$_} }
+		grep { $_ !~ /^(?:08|16)/ } keys %$src;
+	return \%filtered;
 }
 
 # Return the best description string for an inventory instance.
@@ -233,6 +288,41 @@ sub _get_description
 			if defined $data->{$field} && $data->{$field} ne '';
 	}
 	return '';
+}
+
+sub publishMqtt {
+	my %arg = @_;
+	my $topic = $arg{topic};
+	my $message = $arg{message};
+	my $retain = $arg{retain};
+	my $retries = int($arg{retries} // 1);
+	my $server = $arg{server};
+	my $username = $arg{username};
+	my $password = $arg{password};
+
+	$ENV{MQTT_SIMPLE_ALLOW_INSECURE_LOGIN} = 1;
+
+	my $last_error;
+	for my $attempt (0 .. $retries)
+	{
+		eval {
+			my $mqtt = Net::MQTT::Simple->new($server);
+			$mqtt->login($username,$password);
+
+			if ( $retain ) {
+				$mqtt->retain($topic => $message);
+			}
+			else {
+				$mqtt->publish($topic => $message);
+			}
+		};
+		if ($@) {
+			$last_error = $@;
+			next;
+		}
+		return undef;    # success
+	}
+	return $last_error;
 }
 
 1;

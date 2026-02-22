@@ -24,6 +24,13 @@
 		'username' => '',
 		'password' => '',
 
+		# Set to 1 to publish messages with the MQTT retain flag,
+		# so the broker keeps the last message per topic for new subscribers.
+		'retain' => 1,
+
+		# Number of times to retry publishing on failure (0 = no retries)
+		'retries' => 1,
+
 		# Set to 1 to enable verbose per-message debug logging
 		'extra_logging' => 0,
 	},
