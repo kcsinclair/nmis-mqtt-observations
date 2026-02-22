@@ -1,0 +1,44 @@
+#
+# Configuration for the MqttObservations collect plugin.
+#
+# Install this file to: /usr/local/nmis9/conf/mqttobservations.nmis
+#
+# The plugin publishes per-node latest_data observations to an MQTT broker
+# as JSON messages, one message per inventory instance.
+#
+# Topic format: {topic}/{node_name}/{concept}/{index}
+#
+%hash = (
+
+	# MQTT broker connection settings
+	'mqtt' => {
+		# MQTT broker address and port
+		'server'   => 'your.mqtt.server:1883',
+
+		# Base topic prefix. The full topic will be:
+		#   {topic}/{node_name}/{concept}/{index}
+		# e.g. obs/nmis/router1/interface/GigabitEthernet0_0
+		'topic'    => 'obs/nmis',
+
+		# Broker authentication (leave empty if not required)
+		'username' => '',
+		'password' => '',
+
+		# Set to 1 to enable verbose per-message debug logging
+		'extra_logging' => 0,
+	},
+
+	# List of NMIS inventory concepts to publish.
+	# Each concept maps to a class of collected data:
+	#   'interface'    - network interfaces (ifDescr, ifOperStatus, counters, ...)
+	#   'catchall'     - general node info (sysName, sysDescr, reachability, ...)
+	#   'Host_Storage' - disk/memory storage (hrStorageDescr, utilisation, ...)
+	#
+	# Only concepts listed here will be published. Remove or comment out any
+	# concepts you do not need.
+	'concepts' => [
+		'interface',
+		'catchall',
+		'Host_Storage',
+	],
+);
