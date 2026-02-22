@@ -20,9 +20,14 @@
 # *****************************************************************************
 #
 # An NMIS collect plugin that publishes per-node latest_data observations
-# to an MQTT broker as JSON messages, one message per inventory instance.
+# to an MQTT broker as OTel-inspired flat JSON messages.
 #
-# Topic format:  {base_topic}/{node_name}/{concept}/{index}
+# Payload format: flat JSON with OTel attribute names on the envelope and
+# OTel semantic convention names for well-known metrics. Unknown fields are
+# passed through with a "nmis." prefix.
+#
+# Topic format:  {base_topic}/{node_name}/{concept}/{description}
+#                {base_topic}/{node_name}/{subconcept}   (catchall/ping)
 # Config file:   conf/mqttobservations.nmis
 # Install to:    conf/plugins/mqttobservations.pm
 #
@@ -63,7 +68,7 @@ my %DESCRIPTION_FIELDS = (
 	'storage'          => [qw(hrStorageDescr)],
 	'service'          => [qw(service)],
 	'ping'             => [qw(host)],
-	'device'		   => [qw(index)],
+	'device'           => [qw(index)],
 );
 
 # Fallback field names tried in order when concept is not in the map above.
@@ -72,6 +77,140 @@ my @FALLBACK_DESCRIPTION_FIELDS = qw(Description description Name name ifDescr);
 # Rename concepts for clearer MQTT topic/payload naming.
 my %CONCEPT_RENAME = (
 	'device' => 'cpuLoad',
+);
+
+# Maps NMIS field names to OTel semantic convention names, keyed by concept/subconcept.
+# Fields not listed here are passed through with a "nmis." prefix.
+my %FIELD_RENAME = (
+
+	# --- Interface (system.network.*) ---
+	'interface' => {
+		'ifInOctets'        => 'system.network.io.receive',
+		'ifOutOctets'       => 'system.network.io.transmit',
+		'ifInUcastPkts'     => 'system.network.packets.receive',
+		'ifOutUcastPkts'    => 'system.network.packets.transmit',
+		'ifInErrors'        => 'system.network.errors.receive',
+		'ifOutErrors'       => 'system.network.errors.transmit',
+		'ifInDiscards'      => 'system.network.dropped.receive',
+		'ifOutDiscards'     => 'system.network.dropped.transmit',
+		'ifSpeed'           => 'system.network.speed',
+		'ifOperStatus'      => 'system.network.status',
+	},
+
+	# --- CPU/memory (device concept, renamed to cpuLoad in topics) ---
+	'device' => {
+		'cpuLoad'           => 'system.cpu.utilization',
+		'cpu1min'           => 'system.cpu.utilization.1m',
+		'cpu5min'           => 'system.cpu.utilization.5m',
+		'memUtil'           => 'system.memory.utilization',
+		'memAvail'          => 'system.memory.usage.available',
+	},
+
+	# --- Host Storage ---
+	'Host_Storage' => {
+		'hrStorageUsed'            => 'system.filesystem.usage.used',
+		'hrStorageSize'            => 'system.filesystem.usage.total',
+		'hrStorageAllocationUnits' => 'system.filesystem.allocation_unit',
+		'hrStorageType'            => 'system.filesystem.type',
+	},
+
+	# --- Disk IO ---
+	'diskIOTable' => {
+		'diskIOReads'       => 'system.disk.operations.read',
+		'diskIOWrites'      => 'system.disk.operations.write',
+		'diskIOReadBytes'   => 'system.disk.io.read',
+		'diskIOWriteBytes'  => 'system.disk.io.write',
+	},
+
+	# --- Catchall: health ---
+	'health' => {
+		'reachability'       => 'nmis.node.reachability',
+		'availability'       => 'nmis.node.availability',
+		'health'             => 'nmis.node.health',
+		'responsetime'       => 'nmis.node.response_time_ms',
+		'loss'               => 'nmis.node.packet_loss',
+		'intfCollect'        => 'nmis.node.intf_collect',
+		'intfColUp'          => 'nmis.node.intf_collect_up',
+		'reachabilityHealth' => 'nmis.node.reachability_health',
+		'availabilityHealth' => 'nmis.node.availability_health',
+		'responseHealth'     => 'nmis.node.response_health',
+		'cpuHealth'          => 'nmis.node.cpu_health',
+		'memHealth'          => 'nmis.node.mem_health',
+		'intHealth'          => 'nmis.node.int_health',
+		'diskHealth'         => 'nmis.node.disk_health',
+		'swapHealth'         => 'nmis.node.swap_health',
+	},
+
+	# --- Catchall: Host_Health ---
+	'Host_Health' => {
+		'hrSystemProcesses' => 'system.process.count',
+		'hrSystemNumUsers'  => 'system.users.count',
+	},
+
+	# --- Catchall: laload (load averages) ---
+	'laload' => {
+		'laLoad1'           => 'system.cpu.load_average.1m',
+		'laLoad5'           => 'system.cpu.load_average.5m',
+	},
+
+	# --- Catchall: mib2ip (IP statistics) ---
+	'mib2ip' => {
+		'ipInReceives'      => 'system.network.ip.in_receives',
+		'ipInHdrErrors'     => 'system.network.ip.in_header_errors',
+		'ipInAddrErrors'    => 'system.network.ip.in_address_errors',
+		'ipForwDatagrams'   => 'system.network.ip.forwarded',
+		'ipInUnknownProtos' => 'system.network.ip.in_unknown_protos',
+		'ipInDiscards'      => 'system.network.ip.in_discards',
+		'ipInDelivers'      => 'system.network.ip.in_delivers',
+		'ipOutRequests'     => 'system.network.ip.out_requests',
+		'ipOutDiscards'     => 'system.network.ip.out_discards',
+		'ipReasmReqds'      => 'system.network.ip.reassembly_required',
+		'ipReasmOKs'        => 'system.network.ip.reassembly_ok',
+		'ipReasmFails'      => 'system.network.ip.reassembly_failed',
+		'ipFragOKs'         => 'system.network.ip.fragmentation_ok',
+		'ipFragCreates'     => 'system.network.ip.fragments_created',
+		'ipFragFails'       => 'system.network.ip.fragmentation_failed',
+	},
+
+	# --- Catchall: systemStats (UCD-SNMP-MIB) ---
+	'systemStats' => {
+		'ssCpuRawUser'      => 'system.cpu.time.user',
+		'ssCpuRawNice'      => 'system.cpu.time.nice',
+		'ssCpuRawSystem'    => 'system.cpu.time.system',
+		'ssCpuRawIdle'      => 'system.cpu.time.idle',
+		'ssCpuRawWait'      => 'system.cpu.time.wait',
+		'ssCpuRawKernel'    => 'system.cpu.time.kernel',
+		'ssCpuRawInterrupt' => 'system.cpu.time.interrupt',
+		'ssCpuRawSoftIRQ'   => 'system.cpu.time.soft_irq',
+		'ssIORawSent'       => 'system.disk.io.sent',
+		'ssIORawReceived'   => 'system.disk.io.received',
+		'ssRawInterrupts'   => 'system.cpu.interrupts',
+		'ssRawContexts'     => 'system.cpu.context_switches',
+		'ssRawSwapIn'       => 'system.memory.swap.in',
+		'ssRawSwapOut'      => 'system.memory.swap.out',
+	},
+
+	# --- Catchall: tcp (TCP-MIB) ---
+	'tcp' => {
+		'tcpActiveOpens'    => 'system.network.tcp.connections.opened.active',
+		'tcpPassiveOpens'   => 'system.network.tcp.connections.opened.passive',
+		'tcpAttemptFails'   => 'system.network.tcp.connections.failed',
+		'tcpEstabResets'    => 'system.network.tcp.connections.reset',
+		'tcpCurrEstab'      => 'system.network.tcp.connections.established',
+		'tcpInSegs'         => 'system.network.tcp.segments.received',
+		'tcpOutSegs'        => 'system.network.tcp.segments.sent',
+		'tcpRetransSegs'    => 'system.network.tcp.segments.retransmitted',
+		'tcpInErrs'         => 'system.network.tcp.errors.received',
+		'tcpOutRsts'        => 'system.network.tcp.resets.sent',
+	},
+
+	# --- Ping ---
+	'ping' => {
+		'avg_ping_time'     => 'network.peer.rtt.avg_ms',
+		'max_ping_time'     => 'network.peer.rtt.max_ms',
+		'min_ping_time'     => 'network.peer.rtt.min_ms',
+		'ping_loss'         => 'network.peer.packet_loss',
+	},
 );
 
 sub collect_plugin
@@ -129,15 +268,18 @@ sub collect_plugin
 	my $retries       = int($mqtt_config->{retries} // 1);
 	my $base_topic    = $mqtt_config->{topic} // 'obs/nmis';
 
-	# Build the node-level metadata envelope included in every message
+	# Build the OTel-inspired resource envelope included in every message
 	my $node_uuid = $S->nmisng_node->uuid() // '';
-	my %node_meta = (
-		node_name => $node,
-		node_uuid => $node_uuid,
-		group     => $catchall_data->{group}    // '',
-		sysName   => $catchall_data->{sysName}  // '',
-		host      => $catchall_data->{host}     // '',
-		nodeType  => $catchall_data->{nodeType} // '',
+	my %envelope = (
+		'host.name'          => $node,
+		'host.id'            => $node_uuid,
+		'service.name'       => 'nmis',
+		'otel.scope.name'    => 'nmis',
+		'otel.scope.version' => $VERSION,
+		'nmis.group'         => $catchall_data->{group}    // '',
+		'nmis.node.type'     => $catchall_data->{nodeType} // '',
+		'net.host.name'      => $catchall_data->{sysName}  // '',
+		'host.ip'            => $catchall_data->{host}     // '',
 	);
 
 	my $json_encoder = JSON::XS->new->utf8->canonical;
@@ -192,8 +334,8 @@ sub collect_plugin
 			}
 
 			# Build a list of messages to publish.
-			# For catchall, split into one message per subconcept (health, tcp, laload, etc.)
-			# For other concepts, publish one message per inventory instance as before.
+			# For catchall/ping, split into one message per subconcept (health, tcp, laload, etc.)
+			# For other concepts, publish one message per inventory instance.
 			my @messages;
 
 			if ($concept eq 'catchall' || $concept eq 'ping')
@@ -203,37 +345,38 @@ sub collect_plugin
 					my $sub_data = $latest->{data}{$subconcept};
 					next if (!$sub_data || ref($sub_data) ne 'HASH');
 
-					my $sub_derived = _filter_derived($latest->{derived_data}{$subconcept});
+					my $renamed_data    = _apply_field_rename($subconcept, $sub_data);
+					my $renamed_derived = _apply_field_rename($subconcept,
+						_filter_derived($latest->{derived_data}{$subconcept}));
 
 					push @messages, {
 						topic   => "$base_topic/$node/$subconcept",
 						payload => {
-							%node_meta,
-							concept      => $subconcept,
-							subconcept   => $subconcept,
-							index        => $index,
-							description  => $description,
-							timestamp    => $latest->{time} // time(),
-							data         => $sub_data,
-							derived_data => (%$sub_derived ? $sub_derived : undef),
+							%envelope,
+							'nmis.concept'     => $subconcept,
+							'nmis.index'       => $index,
+							'nmis.description' => $description,
+							'timestamp'        => $latest->{time} // time(),
+							%$renamed_data,
+							%$renamed_derived,
 						},
 					};
 				}
 			}
 			else
 			{
-				# Filter derived_data: exclude keys beginning with "08" or "16"
-				my %filtered_derived;
-				if ($latest->{derived_data})
-				{
-					for my $subconcept (keys %{$latest->{derived_data}})
-					{
-						my $filtered = _filter_derived($latest->{derived_data}{$subconcept});
-						$filtered_derived{$subconcept} = $filtered if %$filtered;
-					}
-				}
-
 				my $topic_concept = $CONCEPT_RENAME{$concept} // $concept;
+
+				# Flatten all subconcept data into one hash for this inventory instance
+				my %raw_data;
+				for my $sub (keys %{$latest->{data}})
+				{
+					my $sub_data = $latest->{data}{$sub};
+					%raw_data = (%raw_data, %$sub_data) if ref($sub_data) eq 'HASH';
+				}
+				my $renamed_data    = _apply_field_rename($concept, \%raw_data);
+				my $renamed_derived = _apply_field_rename($concept,
+					_filter_derived_flat($latest->{derived_data}));
 
 				push @messages, {
 					topic   => "$base_topic/$node/$topic_concept/" . do {
@@ -245,13 +388,13 @@ sub collect_plugin
 						$t ne '' ? $t : $topic_index;
 					},
 					payload => {
-						%node_meta,
-						concept      => $topic_concept,
-						index        => $index,
-						description  => $description,
-						timestamp    => $latest->{time} // time(),
-						data         => $latest->{data},
-						derived_data => (%filtered_derived ? \%filtered_derived : undef),
+						%envelope,
+						'nmis.concept'     => $topic_concept,
+						'nmis.index'       => $index,
+						'nmis.description' => $description,
+						'timestamp'        => $latest->{time} // time(),
+						%$renamed_data,
+						%$renamed_derived,
 					},
 				};
 			}
@@ -314,6 +457,39 @@ sub _filter_derived
 	my %filtered = map { $_ => $src->{$_} }
 		grep { $_ !~ /^(?:08|16)/ } keys %$src;
 	return \%filtered;
+}
+
+# Flatten a derived_data hash (keyed by subconcept) and filter 08/16 keys.
+# args: hashref of subconcept => hashref (may be undef)
+# returns: flat hashref (possibly empty)
+sub _filter_derived_flat
+{
+	my ($derived) = @_;
+	return {} if (!$derived || ref($derived) ne 'HASH');
+	my %out;
+	for my $sub (keys %$derived)
+	{
+		my $filtered = _filter_derived($derived->{$sub});
+		%out = (%out, %$filtered);
+	}
+	return \%out;
+}
+
+# Apply OTel field renaming to a flat hashref.
+# Known fields are renamed per %FIELD_RENAME; unknown fields get a "nmis." prefix.
+sub _apply_field_rename
+{
+	my ($concept, $src) = @_;
+	return {} if (!$src || ref($src) ne 'HASH');
+	my $map = $FIELD_RENAME{$concept} // {};
+	my %out;
+	for my $k (keys %$src)
+	{
+		next if $k =~ /_raw$/i;    # exclude raw counter fields
+		my $new_k = $map->{$k} // "nmis.$k";
+		$out{$new_k} = $src->{$k};
+	}
+	return \%out;
 }
 
 # Return the best description string for an inventory instance.
