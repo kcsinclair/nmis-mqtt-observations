@@ -4,9 +4,10 @@
 # Install this file to: /usr/local/nmis9/conf/mqttobservations.nmis
 #
 # The plugin publishes per-node latest_data observations to an MQTT broker
-# as JSON messages, one message per inventory instance.
+# as OTel-inspired flat JSON messages.
 #
-# Topic format: {topic}/{node_name}/{concept}/{index}
+# Topic format: {topic}/{node_name}/{concept}/{description}
+#               {topic}/{node_name}/{subconcept}   (catchall/ping)
 #
 %hash = (
 
