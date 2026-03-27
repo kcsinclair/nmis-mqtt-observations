@@ -534,6 +534,7 @@ sub publishMqtt {
 			else {
 				$mqtt->publish($topic => $message);
 			}
+			$mqtt->disconnect();
 		};
 		if ($@) {
 			$last_error = $@;
