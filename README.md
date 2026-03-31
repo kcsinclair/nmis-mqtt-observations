@@ -89,6 +89,20 @@ Edit `/usr/local/nmis9/conf/mqttobservations.nmis`:
 );
 ```
 
+## Restart NMIS9
+
+Now NMIS-MQTT-Observations is installed and configured, restart the NMIS9 daemon so it will be loaded.
+
+```
+sudo systemctl restart nmis9d
+```
+
+Check your MQTT broker for messages, using a GUI like MQTT Explorer or from the commandline:
+
+```
+mosquitto_sub -h YOURSERVER -u USERNAME -P PASSWORD -t obs/nmis/#
+```
+
 ### Concepts
 
 The `concepts` list controls which NMIS inventory types are exported. Supported values:
